@@ -12,34 +12,24 @@ NODE_CONFIGS = {
 
 async def main():
     nodes = []
-    
-    # Membuat instance Node untuk setiap konfigurasi
     for node_id, config in NODE_CONFIGS.items():
         peers = {p_id: p_config for p_id, p_config in NODE_CONFIGS.items() if p_id != node_id}
-        
         node = Node(node_id=node_id, host=config['host'], port=config['port'], peers=peers)
         nodes.append(node)
 
-    # Menjalankan server untuk setiap node secara bersamaan
+    # Menjalankan server dan election timer untuk setiap node
     server_tasks = [node.run_server() for node in nodes]
+    election_tasks = [node.run_election_timer() for node in nodes] # <-- BARIS BARU
     
-    # Pengiriman pesan
+    # Simulasi
     async def simulation():
-        await asyncio.sleep(5)
-        print("\n--- Memulai Simulasi Pengiriman Pesan ---\n")
-        
-        # Node 1 akan mengirim pesan ke Node 2 dan Node 3
-        node1 = nodes[0]
-        
-        await node1.send_message("node2", {"from": "node1", "content": "Halo Node 2!"})
-        await asyncio.sleep(1) 
-        await node1.send_message("node3", {"from": "node1", "content": "Apa kabar Node 3?"})
-        
-        print("\n--- Simulasi Selesai ---\n")
+        await asyncio.sleep(10) 
+        print("\n--- Simulasi Selesai (Hanya observasi) ---\n")
 
-    # Menjalankan simulasi bersamaan dengan server
+    # Menggabungkan semua task untuk dijalankan bersamaan
     await asyncio.gather(
         *server_tasks,
+        *election_tasks, 
         simulation()
     )
 
