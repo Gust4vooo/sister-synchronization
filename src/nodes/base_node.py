@@ -150,31 +150,55 @@ class Node:
             # Aturan 5: Update commit_index
             if leader_commit > self.commit_index:
                 self.commit_index = min(leader_commit, len(self.log) - 1)
+                await self.apply_log_to_sm()
             
             return web.json_response({"term": self.current_term, "success": True})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
-    async def handle_client_proposal(self, request):
-
+    async def handle_lock_request(self, request):
         if self.state != 'leader':
-            return web.json_response({"error": "Bukan leader"}, status=400)
+            return web.json_response({"error": "Bukan leader", "status": "fail"}, status=400)
 
         try:
             data = await request.json()
-            command = data['command']
+            lock_name = data['lock_name']
 
-            # Buat entri log baru
+            # Cek apakah lock tersedia
+            async with self.state_machine_lock:
+                is_locked = self.state_machine.get(lock_name) is not None
+
+            if is_locked:
+                # Jika terkunci, buat permintaan ini menunggu
+                print(f"[{self.node_id}] Lock '{lock_name}' sibuk. Permintaan dari {data['client_id']} menunggu...")
+                event = asyncio.Event()
+                async with self.pending_requests_lock:
+                    if lock_name not in self.pending_requests:
+                        self.pending_requests[lock_name] = []
+                    self.pending_requests[lock_name].append(event)
+
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    print(f"[{self.node_id}] Permintaan dari {data['client_id']} untuk '{lock_name}' timeout.")
+                    return web.json_response({"error": "Request timed out", "status": "timeout"}, status=408)
+
+            command = {
+                "action": data['action'],
+                "lock_name": lock_name,
+                "client_id": data['client_id']
+            }
+
             new_entry = {'term': self.current_term, 'command': command}
             self.log.append(new_entry)
 
-            print(f"[{self.node_id} - Leader] Menerima proposal: {command}. Log baru di indeks {len(self.log) - 1}")
+            print(f"[{self.node_id} - Leader] Mengajukan proposal lock: {command}")
 
-            return web.json_response({"status": "proposal accepted"}, status=200)
+            return web.json_response({"status": "lock proposal accepted"}, status=202)
 
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
-
+        
     async def handle_message(self, request):
 
         try:
@@ -187,14 +211,18 @@ class Node:
             print(f"[{self.node_id}] Error saat menangani pesan: {e}")
             return web.json_response({"status": "error", "message": str(e)}, status=500)
 
-    async def run_server(self):
+    async def run_server(self, setup_only=False):
+        self.app = web.Application()
+        self.app.router.add_post('/request_vote', self.handle_request_vote)
+        self.app.router.add_post('/append_entries', self.handle_append_entries)
+        
+        if setup_only:
+            return 
 
-        app = web.Application()
-        app.router.add_post('/request_vote', self.handle_request_vote)
-        app.router.add_post('/append_entries', self.handle_append_entries)
-        app.router.add_post('/propose', self.handle_client_proposal)
+        await self.start_server_after_setup()
 
-        runner = web.AppRunner(app)
+    async def start_server_after_setup(self):
+        runner = web.AppRunner(self.app)
         await runner.setup()
         self.server = web.TCPSite(runner, self.host, self.port)
         
@@ -203,6 +231,10 @@ class Node:
         
         while True:
             await asyncio.sleep(3600)
+    
+    async def apply_log_to_sm(self):
+
+        pass 
 
     async def send_message(self, target_node_id: str, message: dict):
 
@@ -251,6 +283,7 @@ class Node:
                 await asyncio.gather(*tasks)
             
             await self.update_commit_index()
+            await self.apply_log_to_sm()
             
             await asyncio.sleep(0.5) 
 
@@ -294,7 +327,7 @@ class Node:
             # Cari indeks tertinggi yang sudah direplikasi di mayoritas node
             for N in range(len(self.log) - 1, self.commit_index, -1):
                 if self.log[N]['term'] == self.current_term:
-                    count = 1 # Diri sendiri
+                    count = 1 
                     for peer_id in self.peers:
                         if self.match_index.get(peer_id, 0) >= N:
                             count += 1
