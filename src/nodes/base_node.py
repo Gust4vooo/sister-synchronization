@@ -5,7 +5,6 @@ from aiohttp import web, ClientSession
 
 class Node:
     def __init__(self, node_id: str, host: str, port: int, peers: dict):
-        # Atribut dari tahap sebelumnya
         self.node_id = node_id
         self.host = host
         self.port = port
@@ -115,6 +114,31 @@ class Node:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def handle_append_entries(self, request):
+        try:
+            data = await request.json()
+            leader_term = data['term']
+            leader_id = data['leader_id']
+
+            # Aturan 1: Tolak jika term leader lebih rendah dari term kita.
+            if leader_term < self.current_term:
+                return web.json_response({"term": self.current_term, "success": False})
+
+            self.last_heartbeat_received = time.time()
+            
+            if leader_term > self.current_term:
+                self.current_term = leader_term
+                self.voted_for = None # Hapus vote lama
+            
+            if self.state != 'follower':
+                 print(f"[{self.node_id}] Menerima heartbeat dari Leader {leader_id} (term {leader_term}). Mundur menjadi Follower.")
+            self.state = 'follower'
+            
+            return web.json_response({"term": self.current_term, "success": True})
+
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
     async def handle_message(self, request):
 
         try:
@@ -131,6 +155,7 @@ class Node:
 
         app = web.Application()
         app.router.add_post('/request_vote', self.handle_request_vote)
+        app.router.add_post('/append_entries', self.handle_append_entries)
 
         runner = web.AppRunner(app)
         await runner.setup()
@@ -177,8 +202,32 @@ class Node:
         asyncio.create_task(self.send_heartbeats())
 
     async def send_heartbeats(self):
-
         while self.state == 'leader':
-            print(f"[{self.node_id} - Leader] Mengirim heartbeat...")
-
+            print(f"[{self.node_id} - Leader] Mengirim heartbeat ke semua peer.")
+            
+            tasks = []
+            for peer_id in self.peers:
+                task = asyncio.create_task(self.send_single_heartbeat(peer_id))
+                tasks.append(task)
+            
+            await asyncio.gather(*tasks)
             await asyncio.sleep(0.5) 
+
+    async def send_single_heartbeat(self, peer_id: str):
+        peer_info = self.peers[peer_id]
+        url = f"http://{peer_info['host']}:{peer_info['port']}/append_entries"
+        
+        request_body = {
+            "term": self.current_term,
+            "leader_id": self.node_id,
+            "entries": [] 
+        }
+
+        async with ClientSession() as session:
+            try:
+                async with session.post(url, json=request_body, timeout=0.25) as response:
+                    if response.status != 200:
+                         print(f"[{self.node_id}] Gagal mengirim heartbeat ke {peer_id}. Status: {response.status}")
+            except Exception:
+                # Gagal menghubungi peer
+                print(f"[{self.node_id}] Gagal menghubungi {peer_id} untuk heartbeat.")
