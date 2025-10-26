@@ -2,6 +2,7 @@
 
 import asyncio
 from src.nodes.base_node import Node
+from aiohttp import web, ClientSession
 
 # Konfgurasi sistem 
 NODE_CONFIGS = {
@@ -23,8 +24,30 @@ async def main():
     
     # Simulasi
     async def simulation():
-        await asyncio.sleep(10) 
-        print("\n--- Simulasi Selesai (Hanya observasi) ---\n")
+        await asyncio.sleep(5) # Tunggu pemilihan selesai
+        
+        # Cari tahu siapa leadernya
+        leader = None
+        while leader is None:
+            for node in nodes:
+                if node.state == 'leader':
+                    leader = node
+                    break
+            await asyncio.sleep(0.5)
+
+        print(f"\n--- Leader terpilih: {leader.node_id}. Mengirim proposal... ---\n")
+
+        # Kirim sebuah perintah ke endpoint /propose milik leader
+        try:
+            async with ClientSession() as session:
+                url = f"http://{leader.host}:{leader.port}/propose"
+                command = {"action": "WRITE", "key": "dunia", "value": "halo"}
+                await session.post(url, json={"command": command})
+        except Exception as e:
+            print(f"Gagal mengirim proposal: {e}")
+
+        await asyncio.sleep(5) # Beri waktu untuk replikasi
+        print("\n--- Simulasi Selesai ---\n")
 
     # Menggabungkan semua task untuk dijalankan bersamaan
     await asyncio.gather(

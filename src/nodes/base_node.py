@@ -14,9 +14,13 @@ class Node:
         self.current_term = 0    
         self.voted_for = None    
         self.votes_received = 0
-        
         self.election_timeout = random.uniform(1.5, 3.0) 
         self.last_heartbeat_received = time.time() 
+        self.log = [{'term': 0, 'command': None}] 
+        self.commit_index = 0
+        self.last_applied = 0
+        self.next_index = {}
+        self.match_index = {}
 
         print(f"Node {self.node_id} diinisialisasi di {self.host}:{self.port} dengan timeout {self.election_timeout:.2f}s")
 
@@ -79,7 +83,7 @@ class Node:
                     if response.status == 200:
                         return await response.json()
             except Exception as e:
-                # Gagal menghubungi peer (mungkin down), anggap tidak ada suara
+                # Gagal menghubungi peer (mungkin down)
                 print(f"[{self.node_id}] Gagal mengirim RequestVote ke {peer_id}: {e}")
                 return None
 
@@ -119,22 +123,54 @@ class Node:
             data = await request.json()
             leader_term = data['term']
             leader_id = data['leader_id']
+            prev_log_index = data['prev_log_index']
+            prev_log_term = data['prev_log_term']
+            entries = data['entries']
+            leader_commit = data['leader_commit']
 
-            # Aturan 1: Tolak jika term leader lebih rendah dari term kita.
+            # Aturan 1: Tolak jika term leader lebih rendah
             if leader_term < self.current_term:
                 return web.json_response({"term": self.current_term, "success": False})
 
             self.last_heartbeat_received = time.time()
-            
-            if leader_term > self.current_term:
-                self.current_term = leader_term
-                self.voted_for = None # Hapus vote lama
-            
             if self.state != 'follower':
-                 print(f"[{self.node_id}] Menerima heartbeat dari Leader {leader_id} (term {leader_term}). Mundur menjadi Follower.")
-            self.state = 'follower'
+                self.state = 'follower'
+
+            # Aturan 2: Jika log tidak punya entri di prev_log_index, atau term-nya tidak cocok, tolak.
+            if len(self.log) <= prev_log_index or self.log[prev_log_index]['term'] != prev_log_term:
+                return web.json_response({"term": self.current_term, "success": False})
+
+            # Aturan 3: Jika entri yang ada konflik dengan yang baru, hapus entri yang ada dan semua setelahnya
+            self.log = self.log[:prev_log_index + 1]
+            self.log.extend(entries)
+            
+            if entries:
+                print(f"[{self.node_id}] Berhasil append log dari Leader. Log saya sekarang: {self.log}")
+
+            # Aturan 5: Update commit_index
+            if leader_commit > self.commit_index:
+                self.commit_index = min(leader_commit, len(self.log) - 1)
             
             return web.json_response({"term": self.current_term, "success": True})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def handle_client_proposal(self, request):
+
+        if self.state != 'leader':
+            return web.json_response({"error": "Bukan leader"}, status=400)
+
+        try:
+            data = await request.json()
+            command = data['command']
+
+            # Buat entri log baru
+            new_entry = {'term': self.current_term, 'command': command}
+            self.log.append(new_entry)
+
+            print(f"[{self.node_id} - Leader] Menerima proposal: {command}. Log baru di indeks {len(self.log) - 1}")
+
+            return web.json_response({"status": "proposal accepted"}, status=200)
 
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -156,6 +192,7 @@ class Node:
         app = web.Application()
         app.router.add_post('/request_vote', self.handle_request_vote)
         app.router.add_post('/append_entries', self.handle_append_entries)
+        app.router.add_post('/propose', self.handle_client_proposal)
 
         runner = web.AppRunner(app)
         await runner.setup()
@@ -197,37 +234,72 @@ class Node:
 
     async def become_leader(self):
         self.state = 'leader'
+        
+        last_log_index = len(self.log) - 1
+        self.next_index = {peer_id: last_log_index + 1 for peer_id in self.peers}
+        self.match_index = {peer_id: 0 for peer_id in self.peers}
+        
         print(f"\n👑👑👑 [{self.node_id}] MENJADI LEADER UNTUK TERM {self.current_term} 👑👑👑\n")
         
-        asyncio.create_task(self.send_heartbeats())
+        asyncio.create_task(self.send_append_entries())
 
-    async def send_heartbeats(self):
+    async def send_append_entries(self):
         while self.state == 'leader':
-            print(f"[{self.node_id} - Leader] Mengirim heartbeat ke semua peer.")
+            # Kirim RPC ke setiap peer secara bersamaan
+            tasks = [self.replicate_log_to_peer(peer_id) for peer_id in self.peers]
+            if tasks:
+                await asyncio.gather(*tasks)
             
-            tasks = []
-            for peer_id in self.peers:
-                task = asyncio.create_task(self.send_single_heartbeat(peer_id))
-                tasks.append(task)
+            await self.update_commit_index()
             
-            await asyncio.gather(*tasks)
             await asyncio.sleep(0.5) 
 
-    async def send_single_heartbeat(self, peer_id: str):
+    async def replicate_log_to_peer(self, peer_id: str):
         peer_info = self.peers[peer_id]
         url = f"http://{peer_info['host']}:{peer_info['port']}/append_entries"
+        
+        # Tentukan entri yang akan dikirim berdasarkan next_index
+        next_idx = self.next_index[peer_id]
+        prev_log_index = next_idx - 1
+        prev_log_term = self.log[prev_log_index]['term']
+        entries_to_send = self.log[next_idx:]
         
         request_body = {
             "term": self.current_term,
             "leader_id": self.node_id,
-            "entries": [] 
+            "prev_log_index": prev_log_index,
+            "prev_log_term": prev_log_term,
+            "entries": entries_to_send,
+            "leader_commit": self.commit_index
         }
 
         async with ClientSession() as session:
             try:
                 async with session.post(url, json=request_body, timeout=0.25) as response:
-                    if response.status != 200:
-                         print(f"[{self.node_id}] Gagal mengirim heartbeat ke {peer_id}. Status: {response.status}")
+                    if response.status == 200:
+                        data = await response.json()
+                        # Proses response dari follower
+                        if data['success']:
+                            # Jika berhasil, update next_index dan match_index
+                            self.next_index[peer_id] = len(self.log)
+                            self.match_index[peer_id] = len(self.log) - 1
+                        else:
+                            self.next_index[peer_id] -= 1
             except Exception:
-                # Gagal menghubungi peer
-                print(f"[{self.node_id}] Gagal menghubungi {peer_id} untuk heartbeat.")
+                pass # Gagal menghubungi peer
+
+    async def update_commit_index(self):
+            majority = (len(self.peers) + 1) // 2 + 1
+            
+            # Cari indeks tertinggi yang sudah direplikasi di mayoritas node
+            for N in range(len(self.log) - 1, self.commit_index, -1):
+                if self.log[N]['term'] == self.current_term:
+                    count = 1 # Diri sendiri
+                    for peer_id in self.peers:
+                        if self.match_index.get(peer_id, 0) >= N:
+                            count += 1
+                    
+                    if count >= majority:
+                        self.commit_index = N
+                        print(f"[{self.node_id} - Leader] Memajukan commit_index ke {self.commit_index}")
+                        break   
