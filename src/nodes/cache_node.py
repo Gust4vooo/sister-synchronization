@@ -4,6 +4,7 @@ import redis.asyncio as redis
 from aiohttp import web
 from collections import OrderedDict
 from enum import Enum, auto
+from .base_node import Node 
 
 class MESIState(Enum):
     MODIFIED = auto()
@@ -11,14 +12,12 @@ class MESIState(Enum):
     SHARED = auto()
     INVALID = auto()
 
-class CacheNode:
-    def __init__(self, node_id: str, host: str, port: int, peers: dict, redis_host: str = 'localhost', redis_port: int = 6379, max_cache_size: int = 10):
-        self.node_id = node_id
-        self.host = host
-        self.port = port
-        self.peers = peers
-        self.app = web.Application()
-        self.redis = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+class CacheNode(Node): 
+    def __init__(self, node_id: str, host: str, port: int, peers: dict, redis_host: str = 'localhost', max_cache_size: int = 100):
+        super().__init__(node_id, host, port, peers, redis_host=redis_host)
+
+        self.redis = redis.Redis(host=redis_host, decode_responses=True)
+
         self.cache = OrderedDict()
         self.max_cache_size = max_cache_size
         self.metrics = {
@@ -28,14 +27,14 @@ class CacheNode:
             "invalidations_sent": 0,
             "invalidations_received": 0
         }
-        
-        self._setup_routes()
 
-    def _setup_routes(self):
+    def _setup_app(self):
+        super()._setup_app() 
         self.app.router.add_get('/read/{key}', self.handle_read)
         self.app.router.add_post('/write', self.handle_write)
         self.app.router.add_post('/invalidate', self.handle_invalidate)
         self.app.router.add_get('/metrics', self.handle_metrics)
+        print(f"[{self.node_id}] Cache-specific endpoints added.")
 
     async def handle_read(self, request):
         key = request.match_info['key']
@@ -48,7 +47,7 @@ class CacheNode:
             return web.json_response({"key": key, "value": cache_entry['value'], "source": "cache"})
         
         self.metrics["cache_misses"] += 1
-        print(f"[{self.node_id}] Cache MISS for '{key}'. Mengambil dari Redis...")
+        print(f"[{self.node_id}] Cache MISS for '{key}'. Fetching from Redis...")
         value = await self.redis.get(key)
         if value is None:
             return web.json_response({"error": "Key not found in Redis"}, status=404)
@@ -81,7 +80,7 @@ class CacheNode:
         if key in self.cache:
             self.metrics["invalidations_received"] += 1
             self.cache[key]['state'] = MESIState.INVALID
-            print(f"[{self.node_id}] CACHE INVALIDATED for '{key}' oleh peer.")
+            print(f"[{self.node_id}] CACHE INVALIDATED for '{key}' by peer.")
         
         return web.json_response({"status": "invalidation acknowledged"})
 
@@ -92,17 +91,8 @@ class CacheNode:
         self.metrics["invalidations_sent"] += len(self.peers)
         async with aiohttp.ClientSession() as session:
             tasks = []
-            for peer_id, peer_address in self.peers.items():
-                url = f"http://{peer_address}/invalidate"
+            for peer_id, peer_info in self.peers.items():
+                url = f"http://{peer_info['host']}:{peer_info['port']}/invalidate"
                 task = asyncio.create_task(session.post(url, json={"key": key}))
                 tasks.append(task)
             await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def run(self):
-        runner = web.AppRunner(self.app)
-        await runner.setup()
-        site = web.TCPSite(runner, self.host, self.port)
-        print(f"[{self.node_id}] CacheNode berjalan di http://{self.host}:{self.port}")
-        await site.start()
-        while True:
-            await asyncio.sleep(3600)

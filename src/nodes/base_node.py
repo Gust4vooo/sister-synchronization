@@ -6,7 +6,7 @@ import json
 from aiohttp import web, ClientSession
 
 class Node:
-    def __init__(self, node_id: str, host: str, port: int, peers: dict):
+    def __init__(self, node_id: str, host: str, port: int, peers: dict, redis_host: str = 'localhost'):
         self.node_id = node_id
         self.host = host
         self.port = port
@@ -21,7 +21,8 @@ class Node:
         self.next_index = {}
         self.match_index = {}
 
-        self.redis = redis.Redis(decode_responses=True)
+        # Gunakan redis_host yang diberikan, bukan 'localhost'
+        self.redis = redis.Redis(host=redis_host, decode_responses=True)
         
         self._load_state_from_redis()
 
@@ -203,21 +204,15 @@ class Node:
             return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     def _setup_app(self):
-        """Mempersiapkan aplikasi web dan route dasarnya."""
         self.app = web.Application()
         self.app.router.add_post('/request_vote', self.handle_request_vote)
         self.app.router.add_post('/append_entries', self.handle_append_entries)
 
     async def run_server(self):
-        """
-        Metode utama untuk menjalankan server.
-        Kelas turunan harus memanggil super().run_server() setelah menambahkan route mereka.
-        """
-        # 1. Setup aplikasi dasar
+        # Setup aplikasi dasar
         self._setup_app()
 
-        # 2. Mulai server dan jalankan selamanya
-        # Kelas turunan akan menambahkan route mereka SEBELUM titik ini.
+        # Mulai server dan jalankan selamanya
         await self.start_server_after_setup()
 
     async def start_server_after_setup(self):

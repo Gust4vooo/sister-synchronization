@@ -1,96 +1,67 @@
+import os
 import asyncio
-from aiohttp import ClientSession
-from src.nodes.base_node import Node
+import json
+import logging
 from src.nodes.lock_manager import LockManagerNode
+from src.nodes.queue_node import QueueNode
+from src.nodes.cache_node import CacheNode
 
-# Konfigurasi node
-NODE_CONFIGS = {
-    "node1": {"host": "127.0.0.1", "port": 8001},
-    "node2": {"host": "127.0.0.1", "port": 8002},
-    "node3": {"host": "127.0.0.1", "port": 8003},
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(name)s] %(message)s')
+logger = logging.getLogger(__name__)
+
+NODE_CLASSES = {
+    "lock_manager": LockManagerNode,
+    "queue_node": QueueNode,
+    "cache_node": CacheNode,
 }
 
 async def main():
-    nodes = []
+    node_type = os.getenv("NODE_TYPE", "lock_manager").lower()
+    node_id = os.getenv("NODE_ID")
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 8000))
+    redis_host = os.getenv("REDIS_HOST", "localhost")
     
-    # Inisialisasi semua node
-    for node_id, config in NODE_CONFIGS.items():
-        peers = {p_id: p_config for p_id, p_config in NODE_CONFIGS.items() if p_id != node_id}
-        node = LockManagerNode(node_id=node_id, host=config['host'], port=config['port'], peers=peers)
-        nodes.append(node)
+    peers_str = os.getenv("PEERS", "{}")
+    try:
+        peers = json.loads(peers_str)
+    except json.JSONDecodeError:
+        logger.error(f"Could not decode PEERS JSON string: {peers_str}")
+        peers = {}
 
-    # Buat task untuk menjalankan server dan election timer untuk setiap node
-    server_tasks = [asyncio.create_task(node.run_server()) for node in nodes]
-    election_tasks = [asyncio.create_task(node.run_election_timer()) for node in nodes]
+    if not node_id:
+        logger.error("FATAL: NODE_ID environment variable is not set. Exiting.")
+        return
+
+    NodeClass = NODE_CLASSES.get(node_type)
+    if not NodeClass:
+        logger.error(f"FATAL: Invalid NODE_TYPE '{node_type}'. Must be one of {list(NODE_CLASSES.keys())}. Exiting.")
+        return
+
+    logger.info(f"Initializing node '{node_id}' of type '{node_type}'")
+    logger.info(f"Configuration: host={host}, port={port}, peers={peers}, redis_host={redis_host}")
     
-    # Definisikan coroutine untuk simulasi klien
-    async def simulation():
-        await asyncio.sleep(5) 
-        leader = None
-        while leader is None:
-            for node in nodes:
-                if node.state == 'leader':
-                    leader = node
-                    break
-            await asyncio.sleep(0.5)
-
-        print(f"\n--- Leader terpilih: {leader.node_id}. Mensimulasikan Potensi Deadlock... ---\n")
-
-        async def client_task(client_id, lock1, lock2):
-            try:
-                async with ClientSession() as session:
-                    url = f"http://{leader.host}:{leader.port}/lock"
-                    
-                    print(f">>> [{client_id}] Mencoba ACQUIRE_EXCLUSIVE '{lock1}'")
-                    # Pastikan lock pertama berhasil didapat
-                    async with session.post(url, json={"action": "ACQUIRE_EXCLUSIVE", "lock_name": lock1, "client_id": client_id}) as resp1:
-                        if resp1.status != 202:
-                            print(f">>> [{client_id}] GAGAL mendapatkan lock pertama '{lock1}' (status: {resp1.status}).")
-                            return
-                    
-                    print(f">>> [{client_id}] BERHASIL mendapatkan '{lock1}'. Menunggu...")
-                    await asyncio.sleep(1) # Beri waktu agar klien lain bisa lock sumber daya kedua
-
-                    print(f">>> [{client_id}] Mencoba ACQUIRE_EXCLUSIVE '{lock2}'")
-                    req2 = {"action": "ACQUIRE_EXCLUSIVE", "lock_name": lock2, "client_id": client_id}
-                    async with session.post(url, json=req2) as resp2:
-                        # Secara eksplisit tangani kasus deadlock
-                        if resp2.status == 423: 
-                            print(f">>> [{client_id}] DEADLOCK terdeteksi saat meminta '{lock2}'. Melepaskan '{lock1}'.")
-                            req_release = {"action": "RELEASE", "lock_name": lock1, "client_id": client_id}
-                            await session.post(url, json=req_release)
-                            return
-                        elif resp2.status != 202:
-                            print(f">>> [{client_id}] GAGAL mendapatkan '{lock2}' (status: {resp2.status}). Melepaskan '{lock1}'.")
-                            req_release = {"action": "RELEASE", "lock_name": lock1, "client_id": client_id}
-                            await session.post(url, json=req_release)
-                            return
-                        
-                        print(f">>> [{client_id}] BERHASIL mendapatkan semua kunci: '{lock1}' dan '{lock2}'.")
-
-            except Exception as e:
-                print(f"Error pada klien {client_id}: {e}")
-
-        # Jalankan dua klien secara bersamaan untuk menciptakan potensi deadlock
-        await asyncio.gather(
-            client_task("Client-A", "resourceA", "resourceB"),
-            client_task("Client-B", "resourceB", "resourceA")
-        )
-
-        await asyncio.sleep(5) # Tunggu beberapa saat agar release bisa terjadi dan state stabil
-        print("\n--- Simulasi Selesai ---")
-        for node in nodes:
-            print(f"Final State Machine [{node.node_id}]: {node.state_machine}")
-
-    await asyncio.gather(
-        *server_tasks,
-        *election_tasks,
-        simulation() 
+    node = NodeClass(
+        node_id=node_id,
+        host=host,
+        port=port,
+        peers=peers,
+        redis_host=redis_host
     )
+
+    try:
+        server_task = asyncio.create_task(node.run_server())
+        election_task = asyncio.create_task(node.run_election_timer())
+        logger.info(f"Node '{node_id}' started successfully and is now running.")
+        await asyncio.gather(server_task, election_task)
+    except Exception as e:
+        logger.error(f"An error occurred while running node '{node_id}': {e}", exc_info=True)
+    finally:
+        logger.info(f"Node '{node_id}' is shutting down.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nMenutup semua node...")
+        logger.info("Shutdown signal received. Closing application.")

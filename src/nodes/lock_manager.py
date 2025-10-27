@@ -3,8 +3,8 @@ from .base_node import Node
 from aiohttp import web, ClientSession
 
 class LockManagerNode(Node):
-    def __init__(self, node_id: str, host: str, port: int, peers: dict):
-        super().__init__(node_id, host, port, peers)
+    def __init__(self, node_id: str, host: str, port: int, peers: dict, redis_host: str = 'localhost'):
+        super().__init__(node_id, host, port, peers, redis_host=redis_host)
         
         self.state_machine = {} 
         self.state_machine_lock = asyncio.Lock()
@@ -33,11 +33,10 @@ class LockManagerNode(Node):
 
         return dfs(start_node)
 
-    async def run_server(self):
+    def _setup_app(self):
         super()._setup_app()
         self.app.router.add_post('/lock', self.handle_lock_request)
         print(f"[{self.node_id}] Endpoint /lock ditambahkan.")
-        await self.start_server_after_setup()
 
     async def handle_lock_request(self, request):
         if self.state != 'leader':
