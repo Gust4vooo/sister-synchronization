@@ -1,6 +1,8 @@
 import asyncio
 import random
 import time
+import redis
+import json
 from aiohttp import web, ClientSession
 
 class Node:
@@ -10,19 +12,53 @@ class Node:
         self.port = port
         self.peers = peers
         self.server = None
-        self.state = 'follower'  
-        self.current_term = 0    
-        self.voted_for = None    
+        self.state = 'follower'
         self.votes_received = 0
-        self.election_timeout = random.uniform(1.5, 3.0) 
-        self.last_heartbeat_received = time.time() 
-        self.log = [{'term': 0, 'command': None}] 
+        self.election_timeout = random.uniform(1.5, 3.0)
+        self.last_heartbeat_received = time.time()
         self.commit_index = 0
         self.last_applied = 0
         self.next_index = {}
         self.match_index = {}
 
+        self.redis = redis.Redis(decode_responses=True)
+        
+        self._load_state_from_redis()
+
         print(f"Node {self.node_id} diinisialisasi di {self.host}:{self.port} dengan timeout {self.election_timeout:.2f}s")
+
+    def _load_state_from_redis(self):
+        term_key = f"raft:{self.node_id}:current_term"
+        voted_for_key = f"raft:{self.node_id}:voted_for"
+        log_key = f"raft:{self.node_id}:log"
+
+        term = self.redis.get(term_key)
+        voted_for = self.redis.get(voted_for_key)
+        log = self.redis.get(log_key)
+
+        if term is not None and voted_for is not None and log is not None:
+            self.current_term = int(term)
+            self.voted_for = voted_for if voted_for != 'None' else None
+            self.log = json.loads(log)
+            print(f"[{self.node_id}] State berhasil dimuat dari Redis.")
+        else:
+            # Inisialisasi state default jika tidak ada di Redis
+            self.current_term = 0
+            self.voted_for = None
+            self.log = [{'term': 0, 'command': None}]
+            self._save_state()
+            print(f"[{self.node_id}] Tidak ada state di Redis. Inisialisasi state baru.")
+
+    def _save_state(self):
+        term_key = f"raft:{self.node_id}:current_term"
+        voted_for_key = f"raft:{self.node_id}:voted_for"
+        log_key = f"raft:{self.node_id}:log"
+
+        # Simpan state ke Redis
+        self.redis.set(term_key, self.current_term)
+        self.redis.set(voted_for_key, str(self.voted_for))
+        self.redis.set(log_key, json.dumps(self.log))
+
 
     async def run_election_timer(self):
 
@@ -38,33 +74,29 @@ class Node:
         self.state = 'candidate'
         self.current_term += 1
         self.voted_for = self.node_id
+        self._save_state() 
         self.votes_received = 1  
         self.last_heartbeat_received = time.time()
 
         print(f"[{self.node_id}] Status -> Candidate. Memulai pemilihan untuk term {self.current_term}.")
 
-        # Kirim RequestVote RPC ke semua peer secara bersamaan
         tasks = []
         for peer_id in self.peers:
             task = asyncio.create_task(self.send_vote_request(peer_id))
             tasks.append(task)
         
-        # Tunggu semua response atau timeout
         responses = await asyncio.gather(*tasks)
 
-        # Hitung suara yang diterima
         for response in responses:
             if response and response['vote_granted']:
                 self.votes_received += 1
         
         print(f"[{self.node_id}] Pemilihan selesai untuk term {self.current_term}. Menerima {self.votes_received} suara.")
 
-        # Cek apakah memenangkan pemilihan
         majority = (len(self.peers) + 1) // 2 + 1
         if self.state == 'candidate' and self.votes_received >= majority:
             await self.become_leader()
         else:
-            # Jika tidak menang, kembali jadi follower dan tunggu pemilihan berikutnya
             self.state = 'follower'
 
     async def send_vote_request(self, peer_id):
@@ -83,7 +115,6 @@ class Node:
                     if response.status == 200:
                         return await response.json()
             except Exception as e:
-                # Gagal menghubungi peer (mungkin down)
                 print(f"[{self.node_id}] Gagal mengirim RequestVote ke {peer_id}: {e}")
                 return None
 
@@ -104,10 +135,12 @@ class Node:
                 self.current_term = candidate_term
                 self.state = 'follower'
                 self.voted_for = None
+                self._save_state() # Simpan state setelah update
 
             # Aturan 3: Berikan suara jika kita belum memilih atau sudah memilih kandidat yang sama.
             if self.voted_for is None or self.voted_for == candidate_id:
                 self.voted_for = candidate_id
+                self._save_state() # Simpan state setelah memberikan vote
                 self.last_heartbeat_received = time.time() 
                 print(f"[{self.node_id}] Memberikan vote untuk {candidate_id} pada term {self.current_term}.")
                 return web.json_response({"term": self.current_term, "vote_granted": True})
@@ -143,6 +176,7 @@ class Node:
             # Aturan 3: Jika entri yang ada konflik dengan yang baru, hapus entri yang ada dan semua setelahnya
             self.log = self.log[:prev_log_index + 1]
             self.log.extend(entries)
+            self._save_state() # Simpan log yang sudah diupdate
             
             if entries:
                 print(f"[{self.node_id}] Berhasil append log dari Leader. Log saya sekarang: {self.log}")
@@ -156,49 +190,6 @@ class Node:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
-    async def handle_lock_request(self, request):
-        if self.state != 'leader':
-            return web.json_response({"error": "Bukan leader", "status": "fail"}, status=400)
-
-        try:
-            data = await request.json()
-            lock_name = data['lock_name']
-
-            # Cek apakah lock tersedia
-            async with self.state_machine_lock:
-                is_locked = self.state_machine.get(lock_name) is not None
-
-            if is_locked:
-                # Jika terkunci, buat permintaan ini menunggu
-                print(f"[{self.node_id}] Lock '{lock_name}' sibuk. Permintaan dari {data['client_id']} menunggu...")
-                event = asyncio.Event()
-                async with self.pending_requests_lock:
-                    if lock_name not in self.pending_requests:
-                        self.pending_requests[lock_name] = []
-                    self.pending_requests[lock_name].append(event)
-
-                try:
-                    await asyncio.wait_for(event.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    print(f"[{self.node_id}] Permintaan dari {data['client_id']} untuk '{lock_name}' timeout.")
-                    return web.json_response({"error": "Request timed out", "status": "timeout"}, status=408)
-
-            command = {
-                "action": data['action'],
-                "lock_name": lock_name,
-                "client_id": data['client_id']
-            }
-
-            new_entry = {'term': self.current_term, 'command': command}
-            self.log.append(new_entry)
-
-            print(f"[{self.node_id} - Leader] Mengajukan proposal lock: {command}")
-
-            return web.json_response({"status": "lock proposal accepted"}, status=202)
-
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-        
     async def handle_message(self, request):
 
         try:
@@ -211,14 +202,22 @@ class Node:
             print(f"[{self.node_id}] Error saat menangani pesan: {e}")
             return web.json_response({"status": "error", "message": str(e)}, status=500)
 
-    async def run_server(self, setup_only=False):
+    def _setup_app(self):
+        """Mempersiapkan aplikasi web dan route dasarnya."""
         self.app = web.Application()
         self.app.router.add_post('/request_vote', self.handle_request_vote)
         self.app.router.add_post('/append_entries', self.handle_append_entries)
-        
-        if setup_only:
-            return 
 
+    async def run_server(self):
+        """
+        Metode utama untuk menjalankan server.
+        Kelas turunan harus memanggil super().run_server() setelah menambahkan route mereka.
+        """
+        # 1. Setup aplikasi dasar
+        self._setup_app()
+
+        # 2. Mulai server dan jalankan selamanya
+        # Kelas turunan akan menambahkan route mereka SEBELUM titik ini.
         await self.start_server_after_setup()
 
     async def start_server_after_setup(self):

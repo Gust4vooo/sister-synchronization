@@ -41,31 +41,43 @@ async def main():
                 async with ClientSession() as session:
                     url = f"http://{leader.host}:{leader.port}/lock"
                     
-                    print(f">>> [{client_id}] Mencoba ACQUIRE '{lock1}'")
-                    req1 = {"action": "ACQUIRE", "lock_name": lock1, "client_id": client_id}
-                    await session.post(url, json=req1)
-                    await asyncio.sleep(1)
+                    print(f">>> [{client_id}] Mencoba ACQUIRE_EXCLUSIVE '{lock1}'")
+                    # Pastikan lock pertama berhasil didapat
+                    async with session.post(url, json={"action": "ACQUIRE_EXCLUSIVE", "lock_name": lock1, "client_id": client_id}) as resp1:
+                        if resp1.status != 202:
+                            print(f">>> [{client_id}] GAGAL mendapatkan lock pertama '{lock1}' (status: {resp1.status}).")
+                            return
+                    
+                    print(f">>> [{client_id}] BERHASIL mendapatkan '{lock1}'. Menunggu...")
+                    await asyncio.sleep(1) # Beri waktu agar klien lain bisa lock sumber daya kedua
 
-                    await asyncio.sleep(1)
-
-                    print(f">>> [{client_id}] Mencoba ACQUIRE '{lock2}'")
-                    req2 = {"action": "ACQUIRE", "lock_name": lock2, "client_id": client_id}
-                    async with session.post(url, json=req2) as resp:
-                        if resp.status != 202:
-                            print(f">>> [{client_id}] GAGAL mendapatkan '{lock2}' (status: {resp.status}). Melepaskan semua kunci.")
+                    print(f">>> [{client_id}] Mencoba ACQUIRE_EXCLUSIVE '{lock2}'")
+                    req2 = {"action": "ACQUIRE_EXCLUSIVE", "lock_name": lock2, "client_id": client_id}
+                    async with session.post(url, json=req2) as resp2:
+                        # Secara eksplisit tangani kasus deadlock
+                        if resp2.status == 423: 
+                            print(f">>> [{client_id}] DEADLOCK terdeteksi saat meminta '{lock2}'. Melepaskan '{lock1}'.")
                             req_release = {"action": "RELEASE", "lock_name": lock1, "client_id": client_id}
                             await session.post(url, json=req_release)
                             return
+                        elif resp2.status != 202:
+                            print(f">>> [{client_id}] GAGAL mendapatkan '{lock2}' (status: {resp2.status}). Melepaskan '{lock1}'.")
+                            req_release = {"action": "RELEASE", "lock_name": lock1, "client_id": client_id}
+                            await session.post(url, json=req_release)
+                            return
+                        
+                        print(f">>> [{client_id}] BERHASIL mendapatkan semua kunci: '{lock1}' dan '{lock2}'.")
+
             except Exception as e:
                 print(f"Error pada klien {client_id}: {e}")
 
-        # Jalankan dua klien secara bersamaan
+        # Jalankan dua klien secara bersamaan untuk menciptakan potensi deadlock
         await asyncio.gather(
             client_task("Client-A", "resourceA", "resourceB"),
             client_task("Client-B", "resourceB", "resourceA")
         )
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(5) # Tunggu beberapa saat agar release bisa terjadi dan state stabil
         print("\n--- Simulasi Selesai ---")
         for node in nodes:
             print(f"Final State Machine [{node.node_id}]: {node.state_machine}")
