@@ -72,30 +72,9 @@ class LockManagerNode(Node):
                             lock_owners = lock_info['owners']
                 
                 if should_wait:
-                    self.waits_for_graph[client_id] = lock_owners
-                    print(f"[{self.node_id}] Graf dependensi diperbarui: {self.waits_for_graph}")
-
-                    if self._detect_cycle(client_id):
-                        del self.waits_for_graph[client_id]
-                        print(f"[{self.node_id}] Permintaan dari {client_id} dibatalkan untuk mencegah deadlock.")
-                        return web.json_response({"error": "Deadlock detected", "status": "deadlock"}, status=423)
-
-                    print(f"[{self.node_id}] Lock '{lock_name}' sibuk. Permintaan {action} dari {client_id} menunggu...")
-                    event = asyncio.Event()
-                    async with self.pending_requests_lock:
-                        self.pending_requests.setdefault(lock_name, []).append(event)
-                    
-                    try:
-                        await asyncio.wait_for(event.wait(), timeout=20.0) 
-                        print(f"[{self.node_id}] Selesai menunggu untuk '{lock_name}'. Mengajukan proposal untuk {client_id}.")
-                    except asyncio.TimeoutError:
-                        print(f"[{self.node_id}] Permintaan dari {client_id} untuk '{lock_name}' timeout.")
-                        async with self.pending_requests_lock:
-                            if lock_name in self.pending_requests and event in self.pending_requests[lock_name]:
-                                self.pending_requests[lock_name].remove(event)
-                        if client_id in self.waits_for_graph:
-                            del self.waits_for_graph[client_id]
-                        return web.json_response({"error": "Request timed out while waiting for lock", "status": "timeout"}, status=408)
+                    # Immediately tell the client the resource is locked.
+                    # The client should handle this and retry.
+                    return web.json_response({"error": f"Lock '{lock_name}' is busy", "status": "locked"}, status=423)
 
                 command = {"action": action, "lock_name": lock_name, "client_id": client_id}
                 new_entry = {'term': self.current_term, 'command': command}

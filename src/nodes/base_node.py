@@ -1,6 +1,6 @@
 import asyncio
 from aiohttp import web
-from aiohttp_swagger3 import SwaggerDocs, SwaggerUi
+from aiohttp_swagger3 import SwaggerDocs
 from ..consensus.raft import RaftNode
 
 class Node(RaftNode):

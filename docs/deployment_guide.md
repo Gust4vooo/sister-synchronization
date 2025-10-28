@@ -4,7 +4,7 @@ Dokumen ini berisi panduan langkah demi langkah untuk menjalankan dan memverifik
 
 ---
 
-## Prasyarat 🛠️
+## Prasyarat 
 
 Sebelum memulai, pastikan perangkat Anda telah terinstal perangkat lunak berikut:
 * **Git** untuk mengkloning repositori.
@@ -12,7 +12,7 @@ Sebelum memulai, pastikan perangkat Anda telah terinstal perangkat lunak berikut
 
 ---
 
-## Langkah-langkah Deployment 🚀
+## Langkah-langkah Deployment 
 
 Proses deployment dibagi menjadi dua tahap utama: mendapatkan kode dan menjalankan sistem yang diinginkan melalui Docker Compose.
 
@@ -59,7 +59,7 @@ File `docker-compose.yml` di direktori utama proyek ini dirancang untuk menjalan
 
 ---
 
-## Verifikasi Sistem 🔎
+## Verifikasi Sistem 
 
 Setelah sistem berjalan, buka **terminal baru** untuk mengirim permintaan `curl` dan memverifikasi fungsionalitasnya.
 
@@ -92,7 +92,7 @@ Setelah sistem berjalan, buka **terminal baru** untuk mengirim permintaan `curl`
 
 ---
 
-## Panduan Troubleshooting 🐛
+## Panduan Troubleshooting 
 
 Berikut adalah beberapa masalah umum yang mungkin terjadi dan cara mengatasinya.
 

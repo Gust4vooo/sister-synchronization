@@ -17,104 +17,106 @@ services:
       - app_network
 
   # Lock Manager nodes 
-  lock_manager_1:
-    <<: *node-template
-    container_name: lock_manager_1
-    hostname: lock_manager_1
-    ports:
-      - "8001:8001"
-    environment:
-      NODE_TYPE: lock_manager
-      NODE_ID: lock_manager_1
-      HOST: ${HOST}
-      PORT: 8001
-      REDIS_HOST: ${REDIS_HOST}
-      PEERS: >
-        {"lock_manager_2": {"host": "lock_manager_2", "port": 8002},
-         "lock_manager_3": {"host": "lock_manager_3", "port": 8003}}
+  # lock_manager_1:
+  #   <<: *node-template
+  #   container_name: lock_manager_1
+  #   hostname: lock_manager_1
+  #   ports:
+  #     - "8001:8001"
+  #   environment:
+  #     NODE_TYPE: lock_manager
+  #     NODE_ID: lock_manager_1
+  #     HOST: ${HOST}
+  #     PORT: 8001
+  #     REDIS_HOST: ${REDIS_HOST}
+  #     # PEERS: '{}'
+  #     PEERS: >
+  #       {"lock_manager_2": {"host": "lock_manager_2", "port": 8002},
+  #        "lock_manager_3": {"host": "lock_manager_3", "port": 8003}}
 
-  lock_manager_2:
-    <<: *node-template
-    container_name: lock_manager_2
-    hostname: lock_manager_2
-    ports:
-      - "8002:8002"
-    environment:
-      NODE_TYPE: lock_manager
-      NODE_ID: lock_manager_2
-      HOST: ${HOST}
-      PORT: 8002
-      REDIS_HOST: ${REDIS_HOST}
-      PEERS: >
-        {"lock_manager_1": {"host": "lock_manager_1", "port": 8001},
-         "lock_manager_3": {"host": "lock_manager_3", "port": 8003}}
+  # lock_manager_2:
+  #   <<: *node-template
+  #   container_name: lock_manager_2
+  #   hostname: lock_manager_2
+  #   ports:
+  #     - "8002:8002"
+  #   environment:
+  #     NODE_TYPE: lock_manager
+  #     NODE_ID: lock_manager_2
+  #     HOST: ${HOST}
+  #     PORT: 8002
+  #     REDIS_HOST: ${REDIS_HOST}
+  #     PEERS: >
+  #       {"lock_manager_1": {"host": "lock_manager_1", "port": 8001},
+  #        "lock_manager_3": {"host": "lock_manager_3", "port": 8003}}
 
-  lock_manager_3:
-    <<: *node-template
-    container_name: lock_manager_3
-    hostname: lock_manager_3
-    ports:
-      - "8003:8003"
-    environment:
-      NODE_TYPE: lock_manager
-      NODE_ID: lock_manager_3
-      HOST: ${HOST}
-      PORT: 8003
-      REDIS_HOST: ${REDIS_HOST}
-      PEERS: >
-        {"lock_manager_1": {"host": "lock_manager_1", "port": 8001},
-         "lock_manager_2": {"host": "lock_manager_2", "port": 8002}}
+  # lock_manager_3:
+  #   <<: *node-template
+  #   container_name: lock_manager_3
+  #   hostname: lock_manager_3
+  #   ports:
+  #     - "8003:8003"
+  #   environment:
+  #     NODE_TYPE: lock_manager
+  #     NODE_ID: lock_manager_3
+  #     HOST: ${HOST}
+  #     PORT: 8003
+  #     REDIS_HOST: ${REDIS_HOST}
+  #     PEERS: >
+  #       {"lock_manager_1": {"host": "lock_manager_1", "port": 8001},
+  #        "lock_manager_2": {"host": "lock_manager_2", "port": 8002}}
 
   # Queue nodes 
-  queue_node_1:
-    <<: *node-template
-    container_name: queue_node_1
-    hostname: queue_node_1
-    ports:
-      - "8004:8004"
-    environment:
-      NODE_TYPE: queue_node
-      NODE_ID: queue_node_1
-      HOST: ${HOST}
-      PORT: 8004
-      REDIS_HOST: ${REDIS_HOST}
-      PEERS: >
-        {"queue_node_2": {"host": "queue_node_2", "port": 8005},
-         "queue_node_3": {"host": "queue_node_3", "port": 8006}}
+  # queue_node_1:
+  #   <<: *node-template
+  #   container_name: queue_node_1
+  #   hostname: queue_node_1
+  #   ports:
+  #     - "8004:8004"
+  #   environment:
+  #     NODE_TYPE: queue_node
+  #     NODE_ID: queue_node_1
+  #     HOST: ${HOST}
+  #     PORT: 8004
+  #     REDIS_HOST: ${REDIS_HOST}
+  #     # PEERS: '{}'
+  #     PEERS: >
+  #       {"queue_node_2": {"host": "queue_node_2", "port": 8005},
+  #        "queue_node_3": {"host": "queue_node_3", "port": 8006}}
 
-  queue_node_2:
-    <<: *node-template
-    container_name: queue_node_2
-    hostname: queue_node_2
-    ports:
-      - "8005:8005"
-    environment:
-      NODE_TYPE: queue_node
-      NODE_ID: queue_node_2
-      HOST: ${HOST}
-      PORT: 8005
-      REDIS_HOST: ${REDIS_HOST}
-      PEERS: >
-        {"queue_node_1": {"host": "queue_node_1", "port": 8004},
-         "queue_node_3": {"host": "queue_node_3", "port": 8006}}
+  # queue_node_2:
+  #   <<: *node-template
+  #   container_name: queue_node_2
+  #   hostname: queue_node_2
+  #   ports:
+  #     - "8005:8005"
+  #   environment:
+  #     NODE_TYPE: queue_node
+  #     NODE_ID: queue_node_2
+  #     HOST: ${HOST}
+  #     PORT: 8005
+  #     REDIS_HOST: ${REDIS_HOST}
+  #     PEERS: >
+  #       {"queue_node_1": {"host": "queue_node_1", "port": 8004},
+  #        "queue_node_3": {"host": "queue_node_3", "port": 8006}}
 
-  queue_node_3:
-    <<: *node-template
-    container_name: queue_node_3
-    hostname: queue_node_3
-    ports:
-      - "8006:8006"
-    environment:
-      NODE_TYPE: queue_node
-      NODE_ID: queue_node_3
-      HOST: ${HOST}
-      PORT: 8006
-      REDIS_HOST: ${REDIS_HOST}
-      PEERS: >
-        {"queue_node_1": {"host": "queue_node_1", "port": 8004},
-         "queue_node_2": {"host": "queue_node_2", "port": 8005}}
+  # queue_node_3:
+  #   <<: *node-template
+  #   container_name: queue_node_3
+  #   hostname: queue_node_3
+  #   ports:
+  #     - "8006:8006"
+  #   environment:
+  #     NODE_TYPE: queue_node
+  #     NODE_ID: queue_node_3
+  #     HOST: ${HOST}
+  #     PORT: 8006
+  #     REDIS_HOST: ${REDIS_HOST}
+  #     PEERS: >
+  #       {"queue_node_1": {"host": "queue_node_1", "port": 8004},
+  #        "queue_node_2": {"host": "queue_node_2", "port": 8005}}
 
-  # Cache nodes
+  # # Cache nodes
   cache_node_1:
     <<: *node-template
     container_name: cache_node_1
@@ -127,6 +129,7 @@ services:
       HOST: ${HOST}
       PORT: 8007
       REDIS_HOST: ${REDIS_HOST}
+      # PEERS: '{}'
       PEERS: >
         {"cache_node_2": {"host": "cache_node_2", "port": 8008},
          "cache_node_3": {"host": "cache_node_3", "port": 8009}}

@@ -2,3 +2,5 @@ aiohttp
 redis
 uhashring
 aiofiles
+locust
+aiohttp-swagger3
