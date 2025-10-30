@@ -3,7 +3,9 @@ import random
 import time
 import redis
 import json
-from aiohttp import web, ClientSession
+from aiohttp import web
+from ..communication.message_passing import Communicator
+from ..communication.failure_detector import FailureDetector
 
 class RaftNode:
     def __init__(self, node_id: str, host: str, port: int, peers: dict, redis_host: str = 'localhost'):
@@ -20,6 +22,12 @@ class RaftNode:
         self.last_applied = 0
         self.next_index = {}
         self.match_index = {}
+
+        # Inisialisasi layer komunikasi
+        self.communicator = Communicator()
+        
+        # Inisialisasi detektor kegagalan
+        self.failure_detector = FailureDetector(self.node_id, self.peers, self.communicator)
 
         # Gunakan redis_host yang diberikan, bukan 'localhost'
         self.redis = redis.Redis(host=redis_host, decode_responses=True)
@@ -82,7 +90,9 @@ class RaftNode:
         print(f"[{self.node_id}] Status -> Candidate. Memulai pemilihan untuk term {self.current_term}.")
 
         tasks = []
-        for peer_id in self.peers:
+        # Hanya minta suara dari peer yang hidup
+        live_peers = self.failure_detector.get_live_peers()
+        for peer_id in live_peers:
             task = asyncio.create_task(self.send_vote_request(peer_id))
             tasks.append(task)
         
@@ -94,7 +104,8 @@ class RaftNode:
         
         print(f"[{self.node_id}] Pemilihan selesai untuk term {self.current_term}. Menerima {self.votes_received} suara.")
 
-        majority = (len(self.peers) + 1) // 2 + 1
+        # Mayoritas dihitung dari seluruh klaster, bukan hanya yang hidup
+        majority = (len(self.peers) + 1) // 2 + 1 
         if self.state == 'candidate' and self.votes_received >= majority:
             await self.become_leader()
         else:
@@ -110,14 +121,10 @@ class RaftNode:
             "candidate_id": self.node_id
         }
 
-        async with ClientSession() as session:
-            try:
-                async with session.post(url, json=request_body, timeout=0.5) as response:
-                    if response.status == 200:
-                        return await response.json()
-            except Exception as e:
-                print(f"[{self.node_id}] Gagal mengirim RequestVote ke {peer_id}: {e}")
-                return None
+        response = await self.communicator.send_rpc(url, request_body, timeout=0.5)
+        if response is None:
+            print(f"[{self.node_id}] Gagal mengirim RequestVote ke {peer_id}")
+        return response
 
     async def handle_request_vote(self, request):
 
@@ -202,11 +209,15 @@ class RaftNode:
         except Exception as e:
             print(f"[{self.node_id}] Error saat menangani pesan: {e}")
             return web.json_response({"status": "error", "message": str(e)}, status=500)
+            
+    async def handle_health_check(self, request):
+        return web.json_response({"status": "ok"})
 
     def _setup_app(self):
         self.app = web.Application()
         self.app.router.add_post('/request_vote', self.handle_request_vote)
         self.app.router.add_post('/append_entries', self.handle_append_entries)
+        self.app.router.add_post('/health', self.handle_health_check) # Endpoint untuk ping
 
     async def run_server(self):
         # Setup aplikasi dasar
@@ -214,6 +225,9 @@ class RaftNode:
 
         # Mulai server dan jalankan selamanya
         await self.start_server_after_setup()
+        
+        # Mulai failure detector setelah server siap
+        self.failure_detector.start()
 
     async def start_server_after_setup(self):
         runner = web.AppRunner(self.app)
@@ -243,20 +257,12 @@ class RaftNode:
 
         print(f"[{self.node_id}] Mengirim pesan ke {target_node_id} di {url}: {message}")
 
-        # Menggunakan aiohttp.ClientSession untuk mengirim request HTTP
-        async with ClientSession() as session:
-            try:
-                async with session.post(url, json=message) as response:
-                    if response.status == 200:
-                        # Pesan berhasil dikirim dan diterima
-                        response_json = await response.json()
-                        print(f"[{self.node_id}] Response dari {target_node_id}: {response_json}")
-                    else:
-                        # Terjadi error di sisi penerima
-                        print(f"[{self.node_id}] Gagal mengirim pesan ke {target_node_id}. Status: {response.status}")
-            except Exception as e:
-                # Terjadi error koneksi
-                print(f"[{self.node_id}] Gagal terhubung ke {target_node_id} di {url}. Error: {e}")
+        response_json = await self.communicator.send_rpc(url, message)
+        if response_json:
+            print(f"[{self.node_id}] Response dari {target_node_id}: {response_json}")
+        else:
+            # Terjadi error koneksi atau error di sisi penerima
+            print(f"[{self.node_id}] Gagal mengirim pesan atau terhubung ke {target_node_id} di {url}.")
 
     async def become_leader(self):
         self.state = 'leader'
@@ -272,7 +278,9 @@ class RaftNode:
     async def send_append_entries(self):
         while self.state == 'leader':
             # Kirim RPC ke setiap peer secara bersamaan
-            tasks = [self.replicate_log_to_peer(peer_id) for peer_id in self.peers]
+            # Hanya kirim ke peer yang dianggap hidup
+            live_peers = self.failure_detector.get_live_peers()
+            tasks = [self.replicate_log_to_peer(peer_id) for peer_id in live_peers]
             if tasks:
                 await asyncio.gather(*tasks)
             
@@ -300,28 +308,25 @@ class RaftNode:
             "leader_commit": self.commit_index
         }
 
-        async with ClientSession() as session:
-            try:
-                async with session.post(url, json=request_body, timeout=0.25) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        # Proses response dari follower
-                        if data['success']:
-                            # Jika berhasil, update next_index dan match_index
-                            self.next_index[peer_id] = len(self.log)
-                            self.match_index[peer_id] = len(self.log) - 1
-                        else:
-                            self.next_index[peer_id] -= 1
-            except Exception:
-                pass # Gagal menghubungi peer
+        data = await self.communicator.send_rpc(url, request_body, timeout=0.25)
+
+        if data:
+            # Proses response dari follower
+            if data['success']:
+                # Jika berhasil, update next_index dan match_index
+                self.next_index[peer_id] = len(self.log)
+                self.match_index[peer_id] = len(self.log) - 1
+            else:
+                self.next_index[peer_id] -= 1
 
     async def update_commit_index(self):
+            # Mayoritas dihitung dari seluruh klaster
             majority = (len(self.peers) + 1) // 2 + 1
             
             # Cari indeks tertinggi yang sudah direplikasi di mayoritas node
             for N in range(len(self.log) - 1, self.commit_index, -1):
                 if self.log[N]['term'] == self.current_term:
-                    count = 1 
+                    count = 1 # Suara dari leader sendiri
                     for peer_id in self.peers:
                         if self.match_index.get(peer_id, 0) >= N:
                             count += 1

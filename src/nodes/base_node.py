@@ -9,7 +9,6 @@ class Node(RaftNode):
         self.app = None
 
     def _setup_app(self):
-        """Setup aiohttp application and basic Swagger documentation."""
         super()._setup_app()
         
         # Initialize Swagger documentation
@@ -20,10 +19,7 @@ class Node(RaftNode):
         )
 
     async def run_server(self):
-        """
-        Fungsi utama untuk menjalankan server node.
-        Ini akan memulai election timer dan server HTTP.
-        """
+
         self._setup_app()
         server_task = asyncio.create_task(super().run_server())
         election_timer_task = asyncio.create_task(self.run_election_timer())

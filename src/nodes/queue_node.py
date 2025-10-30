@@ -1,5 +1,3 @@
-# File: src/nodes/queue_node.py
-
 import asyncio
 import os
 import json
